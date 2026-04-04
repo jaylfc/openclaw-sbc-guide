@@ -127,6 +127,15 @@ qmd update
 qmd embed
 ```
 
+> **Note on timeouts:** Embedding on ARM CPU is slow (~2-5 seconds per chunk). The fork's
+> `RemoteLLM` client defaults to a 300-second (5 minute) timeout per request. If you still
+> see failures during `qmd embed`, you can increase it further via the `QMD_REMOTE_TIMEOUT`
+> environment variable or by passing `timeoutMs` in the `RemoteLLM` config.
+>
+> **Run `qmd embed` on one agent at a time** — running parallel batch embeds from multiple
+> agents will overload the model server and cause timeouts. Once initial indexing is done,
+> incremental updates (new/changed documents) are fast.
+
 ## Networking Notes
 
 ### macvlan and Host Connectivity

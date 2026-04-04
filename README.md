@@ -29,13 +29,13 @@ Orange Pi 5 Plus (Host)
 │   ├── qwen3-reranker-0.6B (rerank)
 │   └── qmd-query-expansion-1.7B (expand)
 │
-├── LXC: naira (192.168.6.213)         ← Agent 1: Discord + Telegram
+├── LXC: agent-1                        ← Agent 1
 │   └── openclaw-gateway → QMD_SERVER=http://host:7832
 │
-├── LXC: stanley (192.168.6.214)       ← Agent 2: Discord
+├── LXC: agent-2                        ← Agent 2
 │   └── openclaw-gateway → QMD_SERVER=http://host:7832
 │
-└── LXC: mary (192.168.6.212)          ← Agent 3: Telegram
+└── LXC: agent-3                        ← Agent 3
     └── openclaw-gateway → QMD_SERVER=http://host:7832
 ```
 

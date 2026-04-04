@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Rockchip RK3588 SoC (found in Orange Pi 5 Plus, Rock 5B, Khadas Edge2, etc.) has three compute paths that could each run a different model:
+The Rockchip RK3588 SoC (found in Orange Pi 5 Plus, Rock 5B, Khadas Edge2, etc.) has three compute paths:
 
 | Backend | Hardware | Compute | RAM Access |
 |---------|----------|---------|------------|
@@ -10,95 +10,193 @@ The Rockchip RK3588 SoC (found in Orange Pi 5 Plus, Rock 5B, Khadas Edge2, etc.)
 | Mali-G610 GPU | 5 shader cores | Vulkan 1.1 | Shared 16GB (UMA) |
 | NPU | 3 cores | INT8/INT16 | 6 TOPS, shared RAM |
 
-## Current Status (CPU only)
+## Current Status: All Models on NPU
 
-All three QMD models currently run on CPU via node-llama-cpp:
-- **embeddinggemma-300M** (~314MB) - embedding model
-- **qwen3-reranker-0.6B** (~610MB) - cross-encoder reranker
-- **qmd-query-expansion-1.7B** (~1.2GB) - query expansion LLM
+All three models now run on the RK3588 NPU via rkllama:
 
-Total RAM: ~2.1GB. Performance is functional but slow for batch operations.
+- **qwen3-embedding-0.6b** (892MB, 1024 dims) — embedding model
+- **qwen3-reranker-0.6b** (892MB) — cross-encoder reranker
+- **qmd-query-expansion** (2.3GB, fine-tuned from Qwen3-1.7B) — query expansion LLM
 
-## Planned: Multi-Backend Split
+Runtime: RKLLM v1.2.3, RKNPU driver v0.9.8, NPU device `/dev/dri/renderD129`
 
-The idea is to spread models across all available hardware:
+## Benchmark Results
 
+| Model | CPU (8-core) | NPU | Speedup |
+|-------|-------------|-----|---------|
+| qwen3-embedding-0.6b | 3-5s / chunk | ~1.25s / chunk | ~3x |
+| qwen3-reranker-0.6b | 10-15s / query | ~2.2s / query | ~6x |
+| qmd-query-expansion | 60+s / query | ~3.4s / query | ~18x |
+
+Query expansion sees the biggest gain because the CPU version was bottlenecked on a 2.3GB model with slow context prefill. The NPU handles this well with w8a8 quantization.
+
+## Model Conversion
+
+### Requirements
+
+- **x86 machine** (RKLLM toolkit does not run on ARM)
+- Python 3.10+ with pip
+- RKLLM toolkit v1.2.3: `pip install rkllm-toolkit==1.2.3`
+
+> **Version pinning is critical.** Pre-converted `.rkllm` models from HuggingFace may have been built with a different toolkit version and will fail to load or produce garbage output. Always convert with the toolkit version that matches your runtime (v1.2.3 for RKLLM runtime v1.2.3).
+
+### Conversion Script
+
+Run this on your x86 machine (tested on Fedora):
+
+```python
+from rkllm.api import RKLLM
+
+# Example: convert qwen3-embedding-0.6b
+llm = RKLLM()
+llm.load_huggingface(model='Qwen/Qwen3-Embedding-0.6B')
+llm.build(
+    do_quantization=True,
+    quantized_dtype='w8a8',
+    target_platform='rk3588',
+)
+llm.export_rkllm('./qwen3-embedding-0.6b.rkllm')
 ```
-NPU (rkllama)     → embeddinggemma-300M  (most frequent, smallest)
-Vulkan (Mali-G610) → qwen3-reranker-0.6B  (medium size, fits in single alloc)
-CPU (ARM NEON)     → qmd-query-expansion-1.7B  (largest, least frequent)
-```
 
-### Why This Split
+Repeat for each model, substituting the HuggingFace model ID or a local path for fine-tuned models.
 
-- **Embeddings** are called most frequently (every document chunk during indexing, every query). NPU INT8 would give the biggest throughput improvement.
-- **Reranker** is called once per search with a small batch of candidates. Vulkan can handle a single ~610MB model.
-- **Query expansion** is called once per search. It's the largest model but least latency-sensitive.
+### Quantization
 
-## Investigation: NPU Path
+Only **w8a8** (8-bit weights, 8-bit activations) is supported for NPU inference. This is applied automatically when `quantized_dtype='w8a8'` is set. The resulting `.rkllm` files are roughly half the size of the original bf16 weights.
 
-### rkllama (Ollama-compatible)
-
-[rkllama](https://github.com/NotPunchnox/rkllama) provides an Ollama-compatible API for RK3588 NPU:
+### Transferring to the SBC
 
 ```sh
-# Install
-git clone https://github.com/NotPunchnox/rkllama.git
-cd rkllama && go build -o rkllama
-
-# Serve a model
-./rkllama serve --model path/to/model.rkllm --port 11434
+scp qwen3-embedding-0.6b.rkllm orangepi:~/.rkllama/models/
+scp qwen3-reranker-0.6b.rkllm orangepi:~/.rkllama/models/
+scp qmd-query-expansion.rkllm orangepi:~/.rkllama/models/
 ```
 
-**Challenge:** Models must be converted to `.rkllm` format via the RKLLM-Toolkit. Only w8a8 quantisation is supported. The toolkit only converts generative LLMs - embedding models may not be supported.
+## rkllama Setup
 
-### RKNN-LLM (official Rockchip)
-
-[airockchip/rknn-llm](https://github.com/airockchip/rknn-llm) is the official runtime. The `rkllm_embed_input` API exists but it's for feeding token embeddings INTO a model, not for generating sentence embeddings FROM a model.
-
-### Custom RKNN Pipeline
-
-The most viable path for NPU embeddings may be:
-1. Export embeddinggemma-300M to ONNX
-2. Convert ONNX to RKNN via `rknn-toolkit2`
-3. Write a small inference server that runs the RKNN model and exposes an HTTP endpoint
-4. Modify `qmd serve` to use this endpoint for embeddings
-
-This is non-trivial but would give genuine hardware acceleration.
-
-## Investigation: Vulkan Path
-
-### Current Issue
-
-The Mali-G610 uses the `panvk` Vulkan driver (open-source, part of Mesa). Known limitations:
-- No `VK_EXT_memory_budget` extension - llama.cpp can't query available VRAM
-- Contiguous allocation limits - CMA pool defaults to 256MB
-- Loading multiple models causes `ErrorOutOfDeviceMemory`
-
-### Potential Fixes
-
-1. **Increase CMA pool**: Add `cma=1024M` to `/boot/armbianEnv.txt` kernel args
-2. **Single model per Vulkan context**: Load only the reranker on Vulkan, keep others on CPU
-3. **Wait for Mesa improvements**: panvk is under active development
-
-### Testing Single Model on Vulkan
+### Installation
 
 ```sh
-# In qmd serve, only the reranker would use Vulkan
-# This requires changes to the serve.ts code to support per-model backends
+git clone https://github.com/NotPunchnox/rkllama.git ~/rkllama
+cd ~/rkllama && go build -o rkllama .
+sudo cp rkllama /usr/local/bin/
 ```
 
-## Benchmarks (TODO)
+### Model Directory Layout
 
-| Model | CPU (8-core) | Vulkan (Mali-G610) | NPU | Notes |
-|-------|-------------|-------------------|-----|-------|
-| embed (300M, Q8) | ? ms/chunk | ? ms/chunk | N/A | |
-| rerank (0.6B, Q8) | ? ms/query | ? ms/query | N/A | |
-| expand (1.7B, Q4) | ? ms/query | N/A | N/A | |
+rkllama expects each model to have a `Modelfile` alongside the `.rkllm` binary:
+
+```
+~/.rkllama/models/
+├── qwen3-embedding-0.6b/
+│   ├── qwen3-embedding-0.6b.rkllm
+│   └── Modelfile
+├── qwen3-reranker-0.6b/
+│   ├── qwen3-reranker-0.6b.rkllm
+│   └── Modelfile
+└── qmd-query-expansion/
+    ├── qmd-query-expansion.rkllm
+    └── Modelfile
+```
+
+See `configs/Modelfile.embedding`, `configs/Modelfile.reranker`, and `configs/Modelfile.query-expansion` for templates.
+
+### Modelfile Format
+
+The Modelfile tells rkllama how to load and run the model:
+
+```
+# Minimal Modelfile example
+FROM ./model-name.rkllm
+
+PARAMETER num_npu_core 3
+PARAMETER max_context_len 4096
+PARAMETER max_new_tokens 512
+```
+
+Key parameters:
+- `num_npu_core` — use all 3 NPU cores for maximum throughput
+- `max_context_len` — set to match the model's training context length
+- `max_new_tokens` — cap generation length (embedding/reranker don't generate, set low)
+
+### Serving
+
+```sh
+# Start rkllama (Ollama-compatible API on port 8080)
+rkllama serve --port 8080 --bind 0.0.0.0
+```
+
+Load a model:
+
+```sh
+curl http://localhost:8080/api/pull -d '{"name": "qwen3-embedding-0.6b"}'
+```
+
+Test embedding:
+
+```sh
+curl http://localhost:8080/api/embeddings -d '{
+  "model": "qwen3-embedding-0.6b",
+  "prompt": "Hello world"
+}'
+```
+
+### Systemd Service
+
+See `configs/rkllama.service`. Install as a system service (requires access to `/dev/dri/renderD129`):
+
+```sh
+sudo cp configs/rkllama.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rkllama
+```
+
+## Hardware Notes
+
+### NPU Device
+
+The NPU is exposed at `/dev/dri/renderD129`. The rkllama process needs read/write access:
+
+```sh
+# Add your user to the render group, or run rkllama as root/system service
+sudo usermod -aG render $USER
+```
+
+### CMA (Contiguous Memory Allocator)
+
+The CMA pool was increased to 2GB in `/boot/armbianEnv.txt` for Vulkan fallback:
+
+```
+extraargs=cma=2048M
+```
+
+The NPU itself does not require large CMA allocations — it uses shared DRAM directly. The 2GB setting is only needed if you also want Vulkan (Mali-G610) to load a model without `ErrorOutOfDeviceMemory`.
+
+### RKLLM Runtime Version
+
+RKLLM runtime v1.2.3 with RKNPU driver v0.9.8. Check your installed version:
+
+```sh
+# Check driver version
+cat /sys/kernel/debug/rknpu/version 2>/dev/null || dmesg | grep rknpu
+```
+
+If your driver version doesn't match, you may need to update the kernel or BSP.
+
+## Vulkan Path (Not Used)
+
+The Mali-G610 Vulkan driver (panvk/Mesa) has known limitations that make it unsuitable for running multiple models:
+
+- No `VK_EXT_memory_budget` extension — llama.cpp can't query available VRAM
+- Contiguous allocation limits — even with CMA bumped to 2GB, loading multiple models causes `ErrorOutOfDeviceMemory`
+- Only a single small model (e.g., the 892MB embedding model) can load reliably
+
+Since all three models now fit on the NPU and perform well there, Vulkan is not used.
 
 ## Resources
 
+- [rkllama](https://github.com/NotPunchnox/rkllama)
+- [airockchip/rknn-llm](https://github.com/airockchip/rknn-llm)
+- [RKLLM toolkit docs](https://github.com/airockchip/rknn-llm/tree/main/rkllm-toolkit)
 - [panvk Mesa driver](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/panfrost/vulkan)
 - [RK3588 NPU benchmarks](https://tinycomputers.io/posts/rockchip-rk3588-npu-benchmarks.html)
-- [node-llama-cpp Vulkan guide](https://node-llama-cpp.withcat.ai/guide/Vulkan)
-- [rk-llama.cpp (GGML NPU backend)](https://github.com/invisiofficial/rk-llama.cpp)

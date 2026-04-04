@@ -1,0 +1,23 @@
+[Unit]
+Description=rkllama NPU inference server (RK3588)
+Documentation=https://github.com/NotPunchnox/rkllama
+After=network.target
+# Ensure rkllama is up before qmd-serve starts routing to it
+Before=qmd-serve.service
+
+[Service]
+Type=simple
+User=USER
+Group=render
+ExecStart=/usr/local/bin/rkllama serve --port 8080 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=5
+
+# NPU device access
+DeviceAllow=/dev/dri/renderD129 rw
+
+# Model storage
+Environment=RKLLAMA_MODELS_DIR=/home/USER/.rkllama/models
+
+[Install]
+WantedBy=multi-user.target

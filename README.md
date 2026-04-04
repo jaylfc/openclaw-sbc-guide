@@ -1,16 +1,16 @@
 # OpenClaw Multi-Agent on SBCs
 
-Run multiple [OpenClaw](https://github.com/openclaw/openclaw) AI agents on a single-board computer with shared local models. This guide covers LXC container isolation, shared embedding/reranking/query-expansion via a [QMD](https://github.com/tobi/qmd) model server, and hardware acceleration on ARM SBCs.
+Run multiple [OpenClaw](https://github.com/openclaw/openclaw) AI agents on a single-board computer with shared local models. This guide covers LXC container isolation, shared embedding/reranking/query-expansion via [rkllama](https://github.com/NotPunchnox/rkllama) on the RK3588 NPU, and hardware acceleration on ARM SBCs.
 
 ## Why
 
-Running multiple AI agents on one SBC means each agent loads its own copy of the embedding model (~314MB), reranker (~610MB), and query expansion model (~1.2GB) into RAM. On a 16GB device running 3 agents, that's ~6GB of duplicated model weights.
+Running multiple AI agents on one SBC means each agent loads its own copy of the embedding model (~892MB), reranker (~892MB), and query expansion model (~2.3GB) into RAM. On a 16GB device running 3 agents, that's ~12GB of duplicated model weights.
 
 This guide shows how to:
 - Isolate each agent in its own LXC container
-- Share models across all agents via a single `qmd serve` instance
+- Share models across all agents via a single `rkllama` instance on the NPU
 - Configure OpenClaw to use QMD's hybrid search (BM25 + vector + reranking)
-- Accelerate inference using available hardware (Vulkan GPU, NPU, CPU)
+- Run all three models on the RK3588 NPU for dramatically faster inference
 
 ## Hardware Tested
 
@@ -24,10 +24,12 @@ Contributions for other SBCs (Raspberry Pi 5, Rock 5B, Khadas Edge2, etc.) welco
 
 ```
 Orange Pi 5 Plus (Host)
-├── qmd serve (port 7832)              ← Loads models ONCE, serves all agents
-│   ├── embeddinggemma-300M (embed)
-│   ├── qwen3-reranker-0.6B (rerank)
-│   └── qmd-query-expansion-1.7B (expand)
+├── rkllama (port 8080)                 ← NPU inference, loads models ONCE
+│   ├── qwen3-embedding-0.6b  (NPU)     ← 892MB, 1024 dims
+│   ├── qwen3-reranker-0.6b   (NPU)     ← 892MB
+│   └── qmd-query-expansion   (NPU)     ← 2.3GB, fine-tuned Qwen3-1.7B
+│
+├── qmd serve (port 7832)               ← Routes requests to rkllama
 │
 ├── LXC: agent-1                        ← Agent 1
 │   └── openclaw-gateway → QMD_SERVER=http://host:7832
@@ -41,7 +43,29 @@ Orange Pi 5 Plus (Host)
 
 ## Quick Start
 
-### 1. Install QMD with remote model support
+### 1. Set up rkllama for NPU inference
+
+rkllama provides an Ollama-compatible API for the RK3588 NPU. Install it on the host:
+
+```sh
+git clone https://github.com/NotPunchnox/rkllama.git ~/rkllama
+cd ~/rkllama && go build -o rkllama .
+sudo cp rkllama /usr/local/bin/
+```
+
+Convert your models to `.rkllm` format **on an x86 machine** using RKLLM toolkit v1.2.3 (w8a8 quantization). See [docs/rk3588-acceleration.md](docs/rk3588-acceleration.md) for the full conversion process.
+
+> **Important:** Pre-converted `.rkllm` models from HuggingFace may not work if they were built with a different toolkit version. You must convert with the matching toolkit version (v1.2.3 for RKLLM runtime v1.2.3).
+
+Place converted models and Modelfiles in `~/.rkllama/models/`. See `configs/Modelfile.*` for templates.
+
+Start rkllama:
+
+```sh
+rkllama serve --port 8080 --bind 0.0.0.0
+```
+
+### 2. Install QMD with remote model support
 
 The upstream QMD doesn't support remote model serving yet. Use our fork:
 
@@ -50,11 +74,11 @@ The upstream QMD doesn't support remote model serving yet. Use our fork:
 git clone -b feat/remote-llm-provider https://github.com/jaylfc/qmd.git ~/qmd-server
 cd ~/qmd-server && npm install && npm run build
 
-# Start serving models
+# Start serving models (routes to rkllama)
 node dist/cli/qmd.js serve --port 7832 --bind 0.0.0.0
 ```
 
-### 2. Create an LXC container for each agent
+### 3. Create an LXC container for each agent
 
 ```sh
 # Create a privileged container with macvlan networking
@@ -76,7 +100,7 @@ sudo incus exec myagent -- bash -c '
 sudo incus exec myagent -- useradd -m -s /bin/bash -G sudo,users myagent
 ```
 
-### 3. Install QMD fork in the container
+### 4. Install QMD fork in the container
 
 ```sh
 sudo incus exec myagent -- su - myagent -c '
@@ -87,7 +111,7 @@ sudo incus exec myagent -- su - myagent -c '
 '
 ```
 
-### 4. Configure OpenClaw to use QMD memory
+### 5. Configure OpenClaw to use QMD memory
 
 In the agent's `~/.openclaw/openclaw.json`:
 
@@ -106,7 +130,7 @@ In the agent's `~/.openclaw/openclaw.json`:
 }
 ```
 
-### 5. Index and embed workspace
+### 6. Index and embed workspace
 
 ```sh
 export QMD_SERVER=http://HOST_IP:7832
@@ -127,14 +151,7 @@ qmd update
 qmd embed
 ```
 
-> **Note on timeouts:** Embedding on ARM CPU is slow (~2-5 seconds per chunk). The fork's
-> `RemoteLLM` client defaults to a 300-second (5 minute) timeout per request. If you still
-> see failures during `qmd embed`, you can increase it further via the `QMD_REMOTE_TIMEOUT`
-> environment variable or by passing `timeoutMs` in the `RemoteLLM` config.
->
-> **Run `qmd embed` on one agent at a time** — running parallel batch embeds from multiple
-> agents will overload the model server and cause timeouts. Once initial indexing is done,
-> incremental updates (new/changed documents) are fast.
+> **Note on performance:** With NPU acceleration, embedding is ~1.25s per chunk (down from 3-5s on CPU). Initial indexing of large workspaces is much faster. Running parallel `qmd embed` from multiple agents simultaneously is still not recommended — stagger them or let incremental updates handle it.
 
 ## Networking Notes
 
@@ -152,13 +169,25 @@ tailscale up --auth-key=YOUR_KEY --hostname=agent-name
 
 ## Systemd Services
 
+### rkllama NPU Server (on host)
+
+```ini
+# /etc/systemd/system/rkllama.service
+```
+
+See `configs/rkllama.service` for the full unit file.
+
+```sh
+sudo systemctl enable --now rkllama
+```
+
 ### QMD Model Server (on host)
 
 ```ini
 # ~/.config/systemd/user/qmd-serve.service
 [Unit]
 Description=QMD Model Server (shared embeddings/reranking/expansion)
-After=network.target
+After=network.target rkllama.service
 
 [Service]
 Type=simple
@@ -166,7 +195,7 @@ ExecStart=/usr/bin/node /home/USER/qmd-server/dist/cli/qmd.js serve --port 7832 
 Restart=on-failure
 RestartSec=5
 Environment=NODE_OPTIONS=--max-old-space-size=4096
-Environment=NODE_LLAMA_CPP_GPU=false
+Environment=RKLLAMA_URL=http://localhost:8080
 
 [Install]
 WantedBy=default.target
@@ -201,19 +230,17 @@ openclaw gateway restart
 | OpenClaw Vulkan GPU for local embeddings | — | [openclaw/openclaw#60347](https://github.com/openclaw/openclaw/pull/60347) | PR open |
 | OpenClaw models.json provider fallback | — | [openclaw/openclaw#60369](https://github.com/openclaw/openclaw/pull/60369) | PR open |
 
-## RK3588 Hardware Acceleration (WIP)
+## RK3588 Hardware Acceleration
 
-The RK3588 has three compute paths:
+All three models now run on the RK3588 NPU via rkllama:
 
-| Backend | Hardware | Best For | Status |
-|---------|----------|----------|--------|
-| CPU (ARM NEON) | 8-core A76/A55 | Query expansion (1.7B, infrequent) | Working |
-| Vulkan | Mali-G610 | Embeddings (300M, frequent, small) | Limited by panvk driver |
-| NPU (RKNN) | 6 TOPS | TBD | Under investigation |
+| Model | Backend | Size | Performance |
+|-------|---------|------|-------------|
+| qwen3-embedding-0.6b | NPU | 892MB | ~1.25s/chunk (was 3-5s CPU) |
+| qwen3-reranker-0.6b | NPU | 892MB | ~2.2s/query (was 10-15s CPU) |
+| qmd-query-expansion | NPU | 2.3GB | ~3.4s/query (was 60+s CPU) |
 
-**Known issue:** The Mali-G610's Vulkan driver (panvk/Mesa) has no `VK_EXT_memory_budget` support and limited contiguous allocation. Loading multiple models on Vulkan causes OOM. Single small models (embedding) work.
-
-**Planned approach:** Split models across backends — NPU for embeddings, Vulkan for reranker, CPU for query expansion. See [docs/rk3588-acceleration.md](docs/rk3588-acceleration.md) for investigation notes.
+Models are converted to `.rkllm` format using RKLLM toolkit v1.2.3 with w8a8 quantization on an x86 machine. See [docs/rk3588-acceleration.md](docs/rk3588-acceleration.md) for full setup details.
 
 ## Resources
 

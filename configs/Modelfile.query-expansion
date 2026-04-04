@@ -1,0 +1,15 @@
+# Modelfile for qmd-query-expansion on RK3588 NPU
+# Place this file alongside qmd-query-expansion.rkllm in
+# ~/.rkllama/models/qmd-query-expansion/
+#
+# Fine-tuned from Qwen3-1.7B, converted using RKLLM toolkit v1.2.3
+# Quantization: w8a8
+# Size: ~2.3GB
+
+FROM ./qmd-query-expansion.rkllm
+
+PARAMETER num_npu_core 3
+PARAMETER max_context_len 4096
+PARAMETER max_new_tokens 256
+
+SYSTEM """You are a query expansion assistant. Given a search query, generate semantically related alternative queries that capture different aspects of the user's intent. Output only the expanded queries, one per line."""

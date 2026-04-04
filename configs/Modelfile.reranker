@@ -1,0 +1,12 @@
+# Modelfile for qwen3-reranker-0.6b on RK3588 NPU
+# Place this file alongside qwen3-reranker-0.6b.rkllm in
+# ~/.rkllama/models/qwen3-reranker-0.6b/
+#
+# Converted from Qwen/Qwen3-Reranker-0.6B using RKLLM toolkit v1.2.3
+# Quantization: w8a8
+
+FROM ./qwen3-reranker-0.6b.rkllm
+
+PARAMETER num_npu_core 3
+PARAMETER max_context_len 8192
+PARAMETER max_new_tokens 1

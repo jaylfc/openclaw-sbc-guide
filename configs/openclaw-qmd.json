@@ -1,0 +1,51 @@
+{
+  "agents": {
+    "defaults": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "workspace": "~/.openclaw/workspace",
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "1h"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "heartbeat": {
+        "every": "55m"
+      },
+      "sandbox": {
+        "mode": "off"
+      }
+    }
+  },
+  "memory": {
+    "backend": "qmd",
+    "qmd": {
+      "command": "/usr/local/bin/qmd",
+      "searchMode": "query",
+      "includeDefaultMemory": true,
+      "update": {
+        "interval": "5m",
+        "debounceMs": 15000,
+        "onBoot": true
+      },
+      "limits": {
+        "maxResults": 6,
+        "maxSnippetChars": 700,
+        "timeoutMs": 8000
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "restart": true
+  }
+}

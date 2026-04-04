@@ -1,0 +1,16 @@
+[Unit]
+Description=QMD Model Server (shared embeddings/reranking/expansion)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /home/USER/qmd-server/dist/cli/qmd.js serve --port 7832 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=5
+Environment=NODE_OPTIONS=--max-old-space-size=4096
+# Set NODE_LLAMA_CPP_GPU=false to force CPU mode (avoids Vulkan OOM on Mali-G610)
+# Remove this line if your GPU driver handles multiple models correctly
+Environment=NODE_LLAMA_CPP_GPU=false
+
+[Install]
+WantedBy=default.target

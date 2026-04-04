@@ -1,0 +1,11 @@
+# QMD collection config for an OpenClaw agent workspace
+# Place at ~/.config/qmd/index.yml
+collections:
+  workspace:
+    path: /home/AGENT/.openclaw/workspace
+    pattern: '**/*.md'
+    ignore:
+      - 'node_modules/**'
+      - '.git/**'
+      - '.beads/**'
+    includeByDefault: true

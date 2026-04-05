@@ -1,10 +1,41 @@
 # Benchmark Results: NPU vs Standard QMD
 
-## Test Setup
+## Methodology
 
-- **Fedora Baseline**: x86_64, 77GB RAM, NVIDIA 3060 12GB, upstream QMD with embeddinggemma-300M (768d), qwen3-reranker-0.6B, qmd-query-expansion-1.7B via node-llama-cpp
-- **Orange Pi NPU**: RK3588, 16GB RAM, NPU 6 TOPS, Qwen3-Embedding-0.6B (1024d), Qwen3-Reranker-0.6B, qmd-query-expansion-1.7B via rkllama
-- **Test corpus**: 8 markdown documents covering 3D printing, Kubernetes, weather, Orange Pi, ML, and cooking
+To validate that the NPU-accelerated pipeline produces correct results, we tested against a standard QMD installation on x86 hardware as a ground truth baseline. Both systems index and search the exact same corpus of 8 test documents.
+
+### Test Corpus
+8 markdown documents covering distinct topics: 3D printing materials, Kubernetes networking, weather, Orange Pi hardware, machine learning, and Italian cooking. Deliberately chosen to have clear relevance boundaries for each test query.
+
+### Environments
+
+| | Fedora Baseline | Orange Pi NPU |
+|---|---|---|
+| **Hardware** | x86_64, 77GB RAM, NVIDIA 3060 12GB | RK3588, 16GB RAM, NPU 6 TOPS |
+| **QMD Version** | Upstream (tobi/qmd) | Fork (jaylfc/qmd) |
+| **Embedding Model** | embeddinggemma-300M (768d) via node-llama-cpp | Qwen3-Embedding-0.6B (1024d) via rkllama NPU |
+| **Reranker** | qwen3-reranker-0.6B via node-llama-cpp | qwen3-reranker-0.6B via rkllama NPU (logit scoring) |
+| **Query Expansion** | qmd-query-expansion-1.7B via node-llama-cpp (GBNF grammar) | qmd-query-expansion-1.7B via rkllama NPU (no grammar) |
+| **Backend** | Local (CPU/GPU, node-llama-cpp) | Remote (qmd serve → rkllama → NPU) |
+
+### How to Reproduce
+
+**Fedora baseline:**
+```sh
+git clone https://github.com/tobi/qmd.git ~/qmd-baseline
+cd ~/qmd-baseline && npm install && npm run build
+# Create test workspace with 8 docs (see configs/test-corpus/)
+node dist/cli/qmd.js update && node dist/cli/qmd.js embed
+node dist/cli/qmd.js query "3d printing filament for beginners" --json -n 6
+```
+
+**Orange Pi NPU:**
+```sh
+# Ensure rkllama and qmd-serve are running
+export QMD_SERVER=http://HOST_TAILSCALE_IP:7832
+qmd update && qmd embed
+qmd query "3d printing filament for beginners" --json -n 6
+```
 
 ## BM25 Search (Keyword)
 

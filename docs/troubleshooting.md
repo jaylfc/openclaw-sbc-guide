@@ -40,6 +40,24 @@
 
 **Fix:** The reranker only processes the top candidates from the initial BM25+vector search (typically 5-10 docs, not hundreds). Ensure the search pipeline is filtering results before reranking.
 
+### Large documents (>100KB) fail to embed completely
+
+**Cause:** Documents like chat transcripts (500KB-1MB) generate 200-300+ chunks. The batch embedding process can trigger error rate aborts or session timeouts before finishing.
+
+**Fixes applied:**
+1. Per-chunk retry with backoff (3 attempts per chunk)
+2. Error rate threshold raised to 99% with 4x minimum sample
+3. Session timeout increased to 60 minutes
+4. Batch embed sends all chunks in one rkllama API call (reduces HTTP overhead)
+
+**Workaround:** Run `qmd embed` multiple times. Each run processes only pending chunks, so progress accumulates. The 5-minute auto-update cycle in OpenClaw also retries.
+
+### NPU embedding speed degrades over time (0.3s → 26s+)
+
+**Cause:** The RKLLM runtime accumulates KV cache state between requests. After hours of continuous operation, embedding latency increases dramatically.
+
+**Fix:** Clear KV cache after each embedding and rerank operation (fixed in rkllama fork). Also added `RuntimeMaxSec=7200` to the systemd service for a 2-hour auto-restart safety net.
+
 ## rkllama Issues
 
 ### "invalid rkllm model!"

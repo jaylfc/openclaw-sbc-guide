@@ -29,16 +29,20 @@ Orange Pi 5 Plus (Host)
 │   ├── qwen3-reranker-0.6b   (NPU)     ← 892MB
 │   └── qmd-query-expansion   (NPU)     ← 2.3GB, fine-tuned Qwen3-1.7B
 │
-├── qmd serve (port 7832)               ← Routes requests to rkllama
+├── TinyAgentOS (port 8888)             ← Web GUI: agents, memory, backends
+│   └── reads agent memory via HTTP (qmd serve in each container)
 │
 ├── LXC: agent-1                        ← Agent 1
-│   └── openclaw-gateway → QMD_SERVER=http://host:7832
+│   ├── openclaw-gateway → QMD_SERVER=http://localhost:7832
+│   └── qmd serve (port 7832)           ← Routes requests to host rkllama
 │
 ├── LXC: agent-2                        ← Agent 2
-│   └── openclaw-gateway → QMD_SERVER=http://host:7832
+│   ├── openclaw-gateway → QMD_SERVER=http://localhost:7832
+│   └── qmd serve (port 7832)           ← Routes requests to host rkllama
 │
 └── LXC: agent-3                        ← Agent 3
-    └── openclaw-gateway → QMD_SERVER=http://host:7832
+    ├── openclaw-gateway → QMD_SERVER=http://localhost:7832
+    └── qmd serve (port 7832)           ← Routes requests to host rkllama
 ```
 
 ## Quick Start
@@ -221,6 +225,29 @@ sed -i '/\[Service\]/a Environment=QMD_SERVER=http://HOST_TAILSCALE_IP:7832' \
 systemctl --user daemon-reload
 openclaw gateway restart
 ```
+
+## TinyAgentOS Web GUI
+
+[TinyAgentOS](https://github.com/jaylfc/tinyagentos) provides a web-based dashboard for monitoring and managing agents, memory, and backends. Each agent runs its own `qmd serve` instance inside its LXC container; TinyAgentOS reaches agent memory by querying those per-container HTTP endpoints.
+
+**Install and run:**
+
+```bash
+cd /home/jay/tinyagentos
+pip install -e .
+python -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port 8888
+```
+
+**Features:**
+- Dashboard with KPIs, backend health, and agent status
+- Memory browser — search and browse agent memories
+- Agent management — add, edit, and remove agents
+- Config editor — edit YAML config with validation
+- Metrics collection — tracks backend response times and system resources
+
+Access at `http://your-host:8888`
+
+> **Note:** TinyAgentOS reads agent memory via the `qmd serve` HTTP API running inside each container. Make sure the container's `qmd serve` port is reachable from the host (Tailscale works well here — see [Networking Notes](#networking-notes)).
 
 ## Forks and Patches
 

@@ -92,3 +92,15 @@ Reranking is the primary speed bottleneck on NPU. Each document requires a full 
 - **Enable reranking for batch/background operations** (agent memory search) where latency is acceptable
 - **Restart rkllama every 2 hours** (RuntimeMaxSec=7200) to prevent KV cache degradation
 - **Run `qmd embed` multiple times** for large workspaces - the retry logic handles intermittent NPU failures
+
+## Embedding Pipeline: 100% Completion Achieved
+
+After implementing batch embed optimisation, per-chunk retry (3x with backoff), 99% error rate threshold, and 60-minute session timeout:
+
+| Agent | Files | Vectors | Largest Doc | Status |
+|-------|-------|---------|-------------|--------|
+| Naira | 77 | 169 | — | 100% complete |
+| Stanley | 89 | 204 | — | 100% complete |
+| Mary | 190 | 2,992 | 928KB transcript | 100% complete |
+
+The 928KB and 720KB chat transcripts (generating 250-300+ chunks each) now embed fully through the NPU pipeline.
